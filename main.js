@@ -16,9 +16,9 @@ fs.readdir('musicdowns', function(err, filenames) {
 
     var chordOutput = mustache.render(chordTemplate, chordView)
 
-    var htmlFilename = filename.replace(/\musicdown$/g, 'html')
+    var htmlFilename = 'chords/' + filename.replace(/\musicdown$/g, 'html')
 
-    fs.writeFileSync('output/' + htmlFilename, chordOutput)
+    fs.writeFileSync(htmlFilename, chordOutput)
 
     indexView.list.push({
       title: chordView.title,
@@ -31,5 +31,5 @@ fs.readdir('musicdowns', function(err, filenames) {
 
   var indexOutput = mustache.render(indexTemplate, indexView);
 
-  fs.writeFileSync('output/index.html', indexOutput)
+  fs.writeFileSync('index.html', indexOutput)
 });
