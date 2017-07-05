@@ -1,0 +1,177 @@
+Description: >
+  Following the step by step tutorial for using AWS Gateway to expose Lambda
+  function.
+Resources:
+  ApiGatewayGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-api-gateway-group
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-invoke-api-gateway
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                - 'execute-api:invoke'
+                Resource: arn:aws:execute-api:*:*:*
+              - Effect: Allow
+                Action:
+                - lambda:InvokeFunction
+                Resource: '*'
+  ApiGatewayUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub ${AWS::StackName}-api-gateway-user
+      Groups:
+        - !Ref ApiGatewayGroup
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: Musicdown API
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref ApiGateway
+    DependsOn:
+      - MusicdownsGet
+      - MusicdownsPost
+  Prod:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: Prod
+      Description: Prod Stage
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiDeployment
+      MethodSettings:
+        - ResourcePath: '/musicdown'
+          HttpMethod: POST
+          MetricsEnabled: true
+          DataTraceEnabled: true
+          LoggingLevel: ERROR
+  MusicdownModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      Name: Musicdown
+      ContentType: application/json
+      RestApiId: !Ref ApiGateway
+      Schema:
+        $schema: 'http://json-schema.org/draft-04/schema#'
+        title: Musicdown
+        type: object
+        properties:
+          name:
+            type: string
+        required:
+          - name
+  MusicdownResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: musicdown
+  MusicdownsGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref MusicdownResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Lambda.Arn}/invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+  MusicdownsPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref MusicdownResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      RequestModels:
+        application/json: !Ref MusicdownModel
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Lambda.Arn}/invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+  CloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+         - Effect: Allow
+           Principal:
+             Service:
+              - apigateway.amazonaws.com
+           Action: sts:AssumeRole
+      ManagedPolicyArns:
+       - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+  Account:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt CloudWatchRole.Arn
+  Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: >
+          'use strict';
+          console.log('Loading event');
+
+          exports.handler = function(event, context, callback) {
+            var name = (event.name === undefined ? 'No-Name' : event.name);
+            console.log('"Hello":"' + name + '"');
+            callback(null, {"Hello":name});
+          };
+      Runtime: nodejs4.3
+      Timeout: 25
+      TracingConfig:
+        Mode: Active
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: '/'
+      Policies:
+      - PolicyName: logs
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'logs:*'
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: xray
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'xray:PutTraceSegments'
+            Resource: '*'
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*
+      FunctionName: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Lambda}
+      Principal: apigateway.amazonaws.com
