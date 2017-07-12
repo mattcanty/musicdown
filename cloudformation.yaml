@@ -2,29 +2,58 @@ Description: >
   Following the step by step tutorial for using AWS Gateway to expose Lambda
   function.
 Resources:
-  ApiGatewayGroup:
-    Type: AWS::IAM::Group
+  MusicdownBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      GroupName: !Sub ${AWS::StackName}-api-gateway-group
-      Policies:
-        - PolicyName: !Sub ${AWS::StackName}-invoke-api-gateway
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                - 'execute-api:invoke'
-                Resource: arn:aws:execute-api:*:*:*
-              - Effect: Allow
-                Action:
-                - lambda:InvokeFunction
-                Resource: '*'
-  ApiGatewayUser:
-    Type: AWS::IAM::User
+      NotificationConfiguration:
+        LambdaConfigurations:
+          -
+            Function: !GetAtt ParseMusicdownLambda.Arn
+            Event: "s3:ObjectCreated:*"
+  ParseMusicdownLambda:
+    Type: AWS::Lambda::Function
     Properties:
-      UserName: !Sub ${AWS::StackName}-api-gateway-user
-      Groups:
-        - !Ref ApiGatewayGroup
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs4.3
+      Timeout: 25
+      TracingConfig:
+        Mode: Active
+      Code:
+        ZipFile: !Sub |
+          'use strict';
+          console.log('Loading event');
+
+          var AWS = require('aws-sdk');
+          var s3 = new AWS.S3();
+
+          // var AWS = require('aws-sdk');
+          // var dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10'});
+
+          exports.handler = function(event, context) {
+            var src_bkt = event.Records[0].s3.bucket.name;
+            var src_key = event.Records[0].s3.object.key;
+
+            s3.getObject({
+              Bucket: src_bkt,
+              Key: src_key
+            }, function(err, data) {
+              if (err) {
+                console.log(err, err.stack);
+              } else {
+                console.log(data.Body.toString());
+                context.succeed();
+              }
+            });
+          }
+  LambdaBucketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt ParseMusicdownLambda.Arn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:aws:s3:::${MusicdownBucket}
   ApiGateway:
     Type: AWS::ApiGateway::RestApi
     Properties:
@@ -60,10 +89,12 @@ Resources:
         title: Musicdown
         type: object
         properties:
-          name:
+          id:
+            type: string
+          raw:
             type: string
         required:
-          - name
+          - raw
   MusicdownResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -125,14 +156,34 @@ Resources:
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
-        ZipFile: >
+        ZipFile: !Sub |
           'use strict';
           console.log('Loading event');
 
+          var uuid = require('node-uuid');
+          var AWS = require('aws-sdk');
+          var dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10'});
+
           exports.handler = function(event, context, callback) {
-            var name = (event.name === undefined ? 'No-Name' : event.name);
-            console.log('"Hello":"' + name + '"');
-            callback(null, {"Hello":name});
+            var uuid4 = uuid.v4();
+            var raw = event.raw;
+
+            dynamodb.putItem({
+              "TableName": "${MusicdownDynamoDBTable}",
+              "Item" : {
+                "Id": {"S": uuid4 },
+                "Raw": {"S": raw }
+              }
+            }, function(err, data) {
+              if (err) {
+                console.log(err);
+
+                callback('Putting item into dynamodb failed');
+              }
+              else {
+                callback(null, data);
+              }
+            });
           };
       Runtime: nodejs4.3
       Timeout: 25
@@ -152,11 +203,30 @@ Resources:
           - sts:AssumeRole
       Path: '/'
       Policies:
+      - PolicyName: s3
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            -
+              Effect: Allow
+              Action:
+              - 's3:GetObject*'
+              Resource: arn:aws:s3:::musicdown-musicdownbucket-ecu0ot3q4lsi
+      - PolicyName: dynamodb
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          -
+            Effect: Allow
+            Action:
+            - 'dynamodb:*'
+            Resource: arn:aws:dynamodb:*:*:*
       - PolicyName: logs
         PolicyDocument:
           Version: 2012-10-17
           Statement:
-          - Effect: Allow
+          -
+            Effect: Allow
             Action:
             - 'logs:*'
             Resource: arn:aws:logs:*:*:*
@@ -164,7 +234,8 @@ Resources:
         PolicyDocument:
           Version: 2012-10-17
           Statement:
-          - Effect: Allow
+          -
+            Effect: Allow
             Action:
             - 'xray:PutTraceSegments'
             Resource: '*'
@@ -175,3 +246,19 @@ Resources:
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*
       FunctionName: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Lambda}
       Principal: apigateway.amazonaws.com
+  MusicdownDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: Id
+          AttributeType: S
+        - AttributeName: Raw
+          AttributeType: S
+      KeySchema:
+        - AttributeName: Id
+          KeyType: HASH
+        - AttributeName: Raw
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5

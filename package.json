@@ -9,7 +9,8 @@
   "author": "Matt Canty",
   "license": "ISC",
   "dependencies": {
-    "mustache": "^2.3.0"
+    "mustache": "^2.3.0",
+    "regex": "^0.1.1"
   },
   "devDependencies": {
     "chai": "^4.0.2",
