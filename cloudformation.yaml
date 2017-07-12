@@ -9,7 +9,19 @@ Resources:
         LambdaConfigurations:
           -
             Function: !GetAtt ParseMusicdownLambda.Arn
-            Event: "s3:ObjectCreated:*"
+            Event: s3:ObjectCreated:*
+  MusicdownBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MusicdownBucket
+      PolicyDocument:
+        Statement:
+        -
+          Action:
+            - s3:GetObject
+          Effect: Allow
+          Resource: !Sub arn:aws:s3:::${MusicdownBucket}/*
+          Principal: '*'
   ParseMusicdownLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -27,8 +39,8 @@ Resources:
           var AWS = require('aws-sdk');
           var s3 = new AWS.S3();
 
-          // var AWS = require('aws-sdk');
-          // var dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10'});
+          var AWS = require('aws-sdk');
+          var dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10'});
 
           exports.handler = function(event, context) {
             var src_bkt = event.Records[0].s3.bucket.name;
@@ -41,8 +53,22 @@ Resources:
               if (err) {
                 console.log(err, err.stack);
               } else {
-                console.log(data.Body.toString());
-                context.succeed();
+                dynamodb.putItem({
+                    "TableName": "${MusicdownDynamoDBTable}",
+                    "Item" : {
+                        "BucketName": {"S": src_bkt },
+                        "BucketKey": {"S": src_key },
+                        "Title": {"S": "some title" },
+                        "Composer": {"S": "some composer" }
+                    }
+                }, function (err, data) {
+                  if (err) console.log(err, err.stack);
+                  else {
+                    console.log(data);
+                    context.succeed();
+                  }
+                });
+
               }
             });
           }
@@ -64,7 +90,6 @@ Resources:
       RestApiId: !Ref ApiGateway
     DependsOn:
       - MusicdownsGet
-      - MusicdownsPost
   Prod:
     Type: AWS::ApiGateway::Stage
     Properties:
@@ -87,14 +112,16 @@ Resources:
       Schema:
         $schema: 'http://json-schema.org/draft-04/schema#'
         title: Musicdown
-        type: object
-        properties:
-          id:
-            type: string
-          raw:
-            type: string
-        required:
-          - raw
+        type: array
+        items:
+          type: object
+          properties:
+            url:
+              type: string
+            title:
+              type: string
+            composer:
+              type: string
   MusicdownResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -107,21 +134,8 @@ Resources:
       RestApiId: !Ref ApiGateway
       ResourceId: !Ref MusicdownResource
       HttpMethod: GET
-      AuthorizationType: NONE
-      Integration:
-        Type: AWS
-        IntegrationHttpMethod: POST
-        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Lambda.Arn}/invocations
-        IntegrationResponses:
-          - StatusCode: 200
-      MethodResponses:
-        - StatusCode: 200
-  MusicdownsPost:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref ApiGateway
-      ResourceId: !Ref MusicdownResource
-      HttpMethod: POST
+      RequestParameters:
+        method.request.querystring.filter: false
       AuthorizationType: NONE
       RequestModels:
         application/json: !Ref MusicdownModel
@@ -160,30 +174,36 @@ Resources:
           'use strict';
           console.log('Loading event');
 
-          var uuid = require('node-uuid');
           var AWS = require('aws-sdk');
           var dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10'});
 
           exports.handler = function(event, context, callback) {
-            var uuid4 = uuid.v4();
-            var raw = event.raw;
+            console.log(JSON.stringify(context));
 
-            dynamodb.putItem({
-              "TableName": "${MusicdownDynamoDBTable}",
-              "Item" : {
-                "Id": {"S": uuid4 },
-                "Raw": {"S": raw }
+            var params = {
+              TableName: "${MusicdownDynamoDBTable}",
+              FilterExpression:
+                "(contains(Title, :search) OR contains(Composer, :search))",
+              ExpressionAttributeValues: {
+                ":search": {
+                  "S": "some"
+                }
               }
-            }, function(err, data) {
+            };
+
+            dynamodb.scan(params, function(err, data) {
               if (err) {
-                console.log(err);
-
-                callback('Putting item into dynamodb failed');
+                console.log(err, err.stack);
+              } else {
+                callback(null, data.Items.map(function(item){
+                  return {
+                    "url":"https://s3.${AWS::Region}.amazonaws.com/" + item.BucketName.S + "/" + item.BucketKey.S,
+                    "title":item.Title.S,
+                    "composer":item.Composer.S
+                  }
+                }));
               }
-              else {
-                callback(null, data);
-              }
-            });
+             });
           };
       Runtime: nodejs4.3
       Timeout: 25
@@ -250,14 +270,14 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       AttributeDefinitions:
-        - AttributeName: Id
+        - AttributeName: Title
           AttributeType: S
-        - AttributeName: Raw
+        - AttributeName: Composer
           AttributeType: S
       KeySchema:
-        - AttributeName: Id
+        - AttributeName: Title
           KeyType: HASH
-        - AttributeName: Raw
+        - AttributeName: Composer
           KeyType: RANGE
       ProvisionedThroughput:
         ReadCapacityUnits: 5
