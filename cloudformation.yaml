@@ -135,7 +135,7 @@ Resources:
       ResourceId: !Ref MusicdownResource
       HttpMethod: GET
       RequestParameters:
-        method.request.querystring.filter: false
+        method.request.querystring.filter: true
       AuthorizationType: NONE
       RequestModels:
         application/json: !Ref MusicdownModel
@@ -145,6 +145,8 @@ Resources:
         Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Lambda.Arn}/invocations
         IntegrationResponses:
           - StatusCode: 200
+        RequestTemplates:
+          application/json: "{ \"filter\": \"$input.params('filter')\" }"
       MethodResponses:
         - StatusCode: 200
   CloudWatchRole:
@@ -178,6 +180,7 @@ Resources:
           var dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10'});
 
           exports.handler = function(event, context, callback) {
+            console.log(JSON.stringify(event));
             console.log(JSON.stringify(context));
 
             var params = {
@@ -186,7 +189,7 @@ Resources:
                 "(contains(Title, :search) OR contains(Composer, :search))",
               ExpressionAttributeValues: {
                 ":search": {
-                  "S": "some"
+                  "S": event.filter
                 }
               }
             };
